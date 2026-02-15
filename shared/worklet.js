@@ -14,8 +14,22 @@ const unpack = require('bare-unpack')
 
 global.console = new Console(new SystemLog())
 
-const ports = IPC.open()
+// Handle engine termination gracefully during worklet shutdown.
+// When worklet.terminate() is called from the host, the JS engine throws
+// a termination exception with no message/stack. We intercept at the
+// event emission level so no handler (including user-registered ones)
+// sees the termination error.
+const _origEmit = Bare.emit.bind(Bare)
+Bare.emit = function (event, ...args) {
+  if (event === 'uncaughtException' || event === 'unhandledRejection') {
+    const err = args[0]
+    const msg = err && err.message ? err.message : String(err)
+    if (msg.includes('execution terminated')) return true
+  }
+  return _origEmit(event, ...args)
+}
 
+const ports = IPC.open()
 const ipc = new IPC(ports[0])
 
 Bare.IPC = ipc
@@ -123,7 +137,7 @@ exports.start = async function start(filename, source, assets) {
     }
   }
 
-  return Module.load(url, source)
+  Module.load(url, source)
 }
 
 function noop() {}
