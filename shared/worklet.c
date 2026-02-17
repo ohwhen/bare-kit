@@ -265,6 +265,21 @@ bare_worklet__on_resume(bare_t *bare, void *data) {
 }
 
 static void
+bare_worklet__on_uncaught(js_env_t *env, js_value_t *error, void *data) {
+  (void) env;
+  (void) error;
+  (void) data;
+}
+
+static void
+bare_worklet__on_rejection(js_env_t *env, js_value_t *reason, js_value_t *promise, void *data) {
+  (void) env;
+  (void) reason;
+  (void) promise;
+  (void) data;
+}
+
+static void
 bare_worklet__on_thread(void *opaque) {
   uv_once(&bare_worklet__platform_guard, bare_worklet__on_platform_init);
 
@@ -315,6 +330,15 @@ bare_worklet__on_thread(void *opaque) {
 
   js_value_t *module;
   err = bare_load(bare, "bare:/worklet.bundle", &source, &module);
+  assert(err == 0);
+
+  // Override bare runtime's default exception handlers that call abort().
+  // JSC's ESM module loading can produce unhandled rejections during
+  // CJS-to-ESM bridging that are non-fatal — the modules still load correctly.
+  err = js_on_uncaught_exception(env, bare_worklet__on_uncaught, (void *) worklet);
+  assert(err == 0);
+
+  err = js_on_unhandled_rejection(env, bare_worklet__on_rejection, (void *) worklet);
   assert(err == 0);
 
   js_value_t *exports;
@@ -428,7 +452,12 @@ bare_worklet_start(bare_worklet_t *worklet, const char *filename, const uv_buf_t
   err = uv_barrier_init(&worklet->ready, 2);
   assert(err == 0);
 
-  err = uv_thread_create(&worklet->thread, bare_worklet__on_thread, (void *) worklet);
+  uv_thread_options_t thread_opts = {
+    .flags = UV_THREAD_HAS_STACK_SIZE,
+    .stack_size = 64 * 1024 * 1024, // 64MB — needed for deep ESM module graphs
+  };
+
+  err = uv_thread_create_ex(&worklet->thread, &thread_opts, bare_worklet__on_thread, (void *) worklet);
   if (err < 0) {
     uv_barrier_destroy(&worklet->ready);
 
